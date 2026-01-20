@@ -1,7 +1,6 @@
 ''' Class ranking method: Laps/Time, Best % rounds '''
 
 import logging
-import RHUtils
 import math
 from eventmanager import Evt
 from RHRace import StartBehavior
@@ -83,7 +82,7 @@ def rank_best_pct_rounds(rhapi, race_class, args):
         round_times = []  # List of (round_num, time_raw, time_formatted)
         round_times_laps = []  # List of (round_num, time_raw, time_formatted)
 
-        timeFormat = rhapi.db.option('timeFormat')
+        timeFormat = rhapi.config.get_item('UI', 'timeFormat')
         
         # Track round number - use race number if available, otherwise use index
         for round_idx, race in enumerate(pilot_result, start=1):
@@ -99,11 +98,11 @@ def rank_best_pct_rounds(rhapi, race_class, args):
             
             # Store individual race times with round numbers
             if race['total_time_raw'] and race['total_time_raw'] > 0:
-                formatted_time = RHUtils.time_format(race['total_time_raw'], timeFormat)
+                formatted_time = rhapi.utils.format_time_to_str(race['total_time_raw'], timeFormat)
                 round_times.append((round_num, race['total_time_raw'], formatted_time))
             
             if race['total_time_laps_raw'] and race['total_time_laps_raw'] > 0:
-                formatted_time_laps = RHUtils.time_format(race['total_time_laps_raw'], timeFormat)
+                formatted_time_laps = rhapi.utils.format_time_to_str(race['total_time_laps_raw'], timeFormat)
                 round_times_laps.append((round_num, race['total_time_laps_raw'], formatted_time_laps))
 
         # Sort by time (fastest first) and format as "{round} > {time}"
@@ -114,8 +113,8 @@ def rank_best_pct_rounds(rhapi, race_class, args):
         new_pilot_result['best_round_times'] = '<br>'.join([f"({round_num}) {time}" for round_num, _, time in round_times])
         new_pilot_result['best_round_times_laps'] = '<br>'.join([f"({round_num}) {time}" for round_num, _, time in round_times_laps])
 
-        new_pilot_result['total_time'] = RHUtils.time_format(new_pilot_result['total_time_raw'], timeFormat)
-        new_pilot_result['total_time_laps'] = RHUtils.time_format(new_pilot_result['total_time_laps_raw'], timeFormat)
+        new_pilot_result['total_time'] = rhapi.utils.format_time_to_str(new_pilot_result['total_time_raw'], timeFormat)
+        new_pilot_result['total_time_laps'] = rhapi.utils.format_time_to_str(new_pilot_result['total_time_laps_raw'], timeFormat)
 
         leaderboard.append(new_pilot_result)
 
