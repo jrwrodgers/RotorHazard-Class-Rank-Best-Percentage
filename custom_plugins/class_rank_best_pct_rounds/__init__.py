@@ -27,10 +27,22 @@ def rank_best_pct_rounds(rhapi, race_class, args):
             race_result = rhapi.db.race_results(race)
 
             if race_result:
+                # Get race number from race object if available
+                race_num = None
+                if hasattr(race, 'round') and race.round:
+                    race_num = race.round
+                elif hasattr(race, 'race_num') and race.race_num:
+                    race_num = race.race_num
+                elif hasattr(race, 'id'):
+                    race_num = race.id
+                
                 for pilotresult in race_result['by_race_time']:
                     if pilotresult['pilot_id'] not in pilotresults:
                         pilotresults[pilotresult['pilot_id']] = []
-                    pilotresults[pilotresult['pilot_id']].append(pilotresult)
+                    # Add race number to pilotresult for later reference
+                    pilotresult_with_race = pilotresult.copy()
+                    pilotresult_with_race['race_num'] = race_num
+                    pilotresults[pilotresult['pilot_id']].append(pilotresult_with_race)
             else:
                 logger.warning("Failed building ranking, race result not available")
                 return False, {}
@@ -66,14 +78,42 @@ def rank_best_pct_rounds(rhapi, race_class, args):
         new_pilot_result['starts'] = 0
         new_pilot_result['total_time_raw'] = 0
         new_pilot_result['total_time_laps_raw'] = 0
+        
+        # Store round times with round numbers for sorting and formatting
+        round_times = []  # List of (round_num, time_raw, time_formatted)
+        round_times_laps = []  # List of (round_num, time_raw, time_formatted)
 
-        for race in pilot_result:
+        timeFormat = rhapi.db.option('timeFormat')
+        
+        # Track round number - use race number if available, otherwise use index
+        for round_idx, race in enumerate(pilot_result, start=1):
             new_pilot_result['laps'] += race['laps']
             new_pilot_result['starts'] += race['starts']
             new_pilot_result['total_time_raw'] += race['total_time_raw']
             new_pilot_result['total_time_laps_raw'] += race['total_time_laps_raw']
+            
+            # Get round number from race if available, otherwise use index (1-based)
+            round_num = race.get('race_num')
+            if round_num is None:
+                round_num = round_idx
+            
+            # Store individual race times with round numbers
+            if race['total_time_raw'] and race['total_time_raw'] > 0:
+                formatted_time = RHUtils.time_format(race['total_time_raw'], timeFormat)
+                round_times.append((round_num, race['total_time_raw'], formatted_time))
+            
+            if race['total_time_laps_raw'] and race['total_time_laps_raw'] > 0:
+                formatted_time_laps = RHUtils.time_format(race['total_time_laps_raw'], timeFormat)
+                round_times_laps.append((round_num, race['total_time_laps_raw'], formatted_time_laps))
 
-        timeFormat = rhapi.db.option('timeFormat')
+        # Sort by time (fastest first) and format as "{round} > {time}"
+        round_times.sort(key=lambda x: x[1])  # Sort by time_raw (ascending = fastest first)
+        round_times_laps.sort(key=lambda x: x[1])  # Sort by time_raw (ascending = fastest first)
+        
+        # Format as line-separated strings using HTML line breaks
+        new_pilot_result['best_round_times'] = '<br>'.join([f"({round_num}) {time}" for round_num, _, time in round_times])
+        new_pilot_result['best_round_times_laps'] = '<br>'.join([f"({round_num}) {time}" for round_num, _, time in round_times_laps])
+
         new_pilot_result['total_time'] = RHUtils.time_format(new_pilot_result['total_time_raw'], timeFormat)
         new_pilot_result['total_time_laps'] = RHUtils.time_format(new_pilot_result['total_time_laps_raw'], timeFormat)
 
@@ -86,10 +126,12 @@ def rank_best_pct_rounds(rhapi, race_class, args):
             x['total_time_laps_raw'] if x['total_time_laps_raw'] and x['total_time_laps_raw'] > 0 else float('inf') # total time ascending except 0
         ))
 
-        # determine ranking
+        # determine ranking and calculate delta times
         last_rank = None
         last_rank_laps = 0
         last_rank_time = 0
+        leader_time = None
+        
         for i, row in enumerate(leaderboard, start=1):
             pos = i
             if last_rank_laps == row['laps'] and last_rank_time == row['total_time_laps_raw']:
@@ -99,6 +141,31 @@ def rank_best_pct_rounds(rhapi, race_class, args):
             last_rank_time = row['total_time_laps_raw']
 
             row['position'] = pos
+            
+            # Store leader's time (first position with valid time)
+            if leader_time is None and pos == 1 and row['total_time_laps_raw'] and row['total_time_laps_raw'] > 0:
+                leader_time = row['total_time_laps_raw']
+        
+        # Add delta times for non-leaders
+        for row in leaderboard:
+            if row['position'] != 1 and row['total_time_laps_raw'] and row['total_time_laps_raw'] > 0 and leader_time:
+                delta_raw = row['total_time_laps_raw'] - leader_time
+                if delta_raw > 0:  # Only show positive deltas
+                    # Convert to seconds if needed (check if value seems to be in milliseconds)
+                    # If delta is very large (> 1000), assume it's in milliseconds
+                    if delta_raw > 1000:
+                        delta = delta_raw / 1000.0
+                    else:
+                        delta = delta_raw
+                    # Format as +ss:mm (seconds:centiseconds)
+                    seconds = int(delta)
+                    centiseconds = int(round((delta - seconds) * 100))
+                    # Handle centiseconds overflow (shouldn't happen, but safety check)
+                    if centiseconds >= 100:
+                        seconds += centiseconds // 100
+                        centiseconds = centiseconds % 100
+                    delta_str = f"+{seconds}:{centiseconds:02d}"
+                    row['total_time_laps'] = row['total_time_laps'] + '<br>' + delta_str
 
         meta = {
             'rank_fields': [{
@@ -110,6 +177,9 @@ def rank_best_pct_rounds(rhapi, race_class, args):
             },{
                 'name': 'starts',
                 'label': "Starts"
+            },{
+                'name': 'best_round_times_laps',
+                'label': "Best Round Times"
             }]
         }
 
@@ -120,10 +190,12 @@ def rank_best_pct_rounds(rhapi, race_class, args):
             x['total_time_raw'] if x['total_time_raw'] and x['total_time_raw'] > 0 else float('inf') # total time ascending except 0
         ))
 
-        # determine ranking
+        # determine ranking and calculate delta times
         last_rank = None
         last_rank_laps = 0
         last_rank_time = 0
+        leader_time = None
+        
         for i, row in enumerate(leaderboard, start=1):
             pos = i
             if last_rank_laps == row['laps'] and last_rank_time == row['total_time_raw']:
@@ -133,6 +205,31 @@ def rank_best_pct_rounds(rhapi, race_class, args):
             last_rank_time = row['total_time_raw']
 
             row['position'] = pos
+            
+            # Store leader's time (first position with valid time)
+            if leader_time is None and pos == 1 and row['total_time_raw'] and row['total_time_raw'] > 0:
+                leader_time = row['total_time_raw']
+        
+        # Add delta times for non-leaders
+        for row in leaderboard:
+            if row['position'] != 1 and row['total_time_raw'] and row['total_time_raw'] > 0 and leader_time:
+                delta_raw = row['total_time_raw'] - leader_time
+                if delta_raw > 0:  # Only show positive deltas
+                    # Convert to seconds if needed (check if value seems to be in milliseconds)
+                    # If delta is very large (> 1000), assume it's in milliseconds
+                    if delta_raw > 1000:
+                        delta = delta_raw / 1000.0
+                    else:
+                        delta = delta_raw
+                    # Format as +ss:mm (seconds:centiseconds)
+                    seconds = int(delta)
+                    centiseconds = int(round((delta - seconds) * 100))
+                    # Handle centiseconds overflow (shouldn't happen, but safety check)
+                    if centiseconds >= 100:
+                        seconds += centiseconds // 100
+                        centiseconds = centiseconds % 100
+                    delta_str = f"+{seconds}:{centiseconds:02d}"
+                    row['total_time'] = row['total_time'] + '<br>' + delta_str
 
         meta = {
             'rank_fields': [{
@@ -144,6 +241,9 @@ def rank_best_pct_rounds(rhapi, race_class, args):
             },{
                 'name': 'starts',
                 'label': "Starts"
+            },{
+                'name': 'best_round_times',
+                'label': "Best Round Times"
             }]
         }
 
